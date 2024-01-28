@@ -5,6 +5,53 @@
 #include <linux/i2c.h>
 #include "adxl345_tp2.h"
 
+//--------------------------------------------------------------------------------------------------------
+char read_reg(struct i2c_client *client, char reg_id);
+void write_reg(struct i2c_client *client, char reg_id, char reg_value);
+
+// Lab 3 - First Step
+//--------------------------------------------------------------------------------------------------------
+#include <linux/miscdevice.h>
+
+struct adxl345_device
+{
+    struct miscdevice misc_dev;
+};
+
+char x = 0; // Counter for the connected devices
+//--------------------------------------------------------------------------------------------------------
+
+// Lab 3 - Second Step
+//--------------------------------------------------------------------------------------------------------
+static int adxl345_read(struct file *file, char __user *user_buffer, size_t size, loff_t *offset)
+{
+    struct adxl345_device *dev = (struct adxl345_device *)file->private_data;
+    struct i2c_client *client = to_i2c_client(dev->misc_dev.parent);
+
+    char len = size / sizeof(char);
+
+    printk("READING FUNCTION WAS CALLED\n");
+
+    if (len > 0)
+    {
+
+        user_buffer[0] = read_reg(client, DATAX1);
+
+        if (len > 1)
+            user_buffer[1] = read_reg(client, DATAX0);
+    }
+
+    return 0;
+}
+
+static const struct file_operations adxl345_fops = {
+    .owner = THIS_MODULE,
+    .read = adxl345_read};
+
+//--------------------------------------------------------------------------------------------------------
+
+// Lab 2 - Third Step
+//--------------------------------------------------------------------------------------------------------
 char read_reg(struct i2c_client *client,
               char reg_id)
 {
@@ -22,6 +69,7 @@ void write_reg(struct i2c_client *client,
     char buf[2] = {reg_id, reg_value};
     i2c_master_send(client, buf, 2);
 }
+//--------------------------------------------------------------------------------------------------------
 
 // https://docs.kernel.org/i2c/writing-clients.html
 static int adxl345_probe(struct i2c_client *client,
@@ -73,12 +121,52 @@ static int adxl345_probe(struct i2c_client *client,
     printk("current value: %d\n\n", read_reg(client, POWER_CTL));
     //--------------------------------------------------------------------------------------------------------
 
+    // Lab 3 - First Step
+    //--------------------------------------------------------------------------------------------------------
+    // Dynamically allocating memory for an instance of the struct adxl345_device
+    struct adxl345_device *adxl345_dev = kmalloc(sizeof(struct adxl345_device), GFP_KERNEL);
+    if (!adxl345_dev)
+        return -ENOMEM;
+
+    // Associating this instance with the struct i2c_client
+    i2c_set_clientdata(client, adxl345_dev);
+
+    // Filling the content of the miscdevice structure contained in the instance of the adxl345_device structure
+    char *name = kasprintf(GFP_KERNEL, "adxl345-%d", x);
+    if (!name)
+    {
+        pr_err("[ERROR] allocation failure\n");
+        return -ENOMEM;
+    }
+    x++;
+
+    adxl345_dev->misc_dev.minor = MISC_DYNAMIC_MINOR;
+    adxl345_dev->misc_dev.name = name;
+    adxl345_dev->misc_dev.parent = &client->dev;
+    adxl345_dev->misc_dev.fops = &adxl345_fops; // Register your device's file operations (second step)
+    adxl345_dev->misc_dev.this_device = NULL;
+    adxl345_dev->misc_dev.groups = NULL;
+    adxl345_dev->misc_dev.nodename = NULL;
+
+    // Registering with the misc framework
+    if (misc_register(&adxl345_dev->misc_dev))
+    {
+        pr_err("[ERROR] misc_register failed\n");
+        return -1;
+    }
+
+    printk("%s has been detected\n", name);
+    //--------------------------------------------------------------------------------------------------------
+
+    // Lab 3 - Second Step
+    //--------------------------------------------------------------------------------------------------------
+
+    //--------------------------------------------------------------------------------------------------------
+
     return 0;
 }
 static int adxl345_remove(struct i2c_client *client)
 {
-    printk("adxl345 has been removed...\n\n");
-
     // Lab 2 - Third Step
     //--------------------------------------------------------------------------------------------------------
     printk("-------------------\nPOWER_CTL\n");
@@ -86,6 +174,20 @@ static int adxl345_remove(struct i2c_client *client)
     printk("previous value: %d\n", power_value);
     write_reg(client, POWER_CTL, power_value & 0xF7);
     printk("current value: %d\n\n", read_reg(client, POWER_CTL));
+    //--------------------------------------------------------------------------------------------------------
+
+    // Lab 3 - First Step
+    //--------------------------------------------------------------------------------------------------------
+    struct adxl345_device *adxl345_dev = i2c_get_clientdata(client); // Getting the device pointer from the client
+    misc_deregister(&adxl345_dev->misc_dev);                         // Unregistering the misc device
+    char *name = adxl345_dev->misc_dev.name;
+
+    printk("%s has been removed\n", name);
+
+    kfree(name);        // Free the memory reserved for the device name
+    kfree(adxl345_dev); // Free the memory allocated for the device structure
+
+    x--; // Decreasing the number of connected devices
     //--------------------------------------------------------------------------------------------------------
 
     return 0;
