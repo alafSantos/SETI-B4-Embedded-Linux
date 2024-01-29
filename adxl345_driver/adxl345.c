@@ -3,11 +3,16 @@
 #include <linux/kernel.h>
 #include <linux/of.h>
 #include <linux/i2c.h>
-#include "adxl345_tp2.h"
+
+#include <linux/ioctl.h>
+#include "adxl345_tp.h"
 
 //--------------------------------------------------------------------------------------------------------
 char read_reg(struct i2c_client *client, char reg_id);
 void write_reg(struct i2c_client *client, char reg_id, char reg_value);
+static int adxl345_probe(struct i2c_client *client, const struct i2c_device_id *id);
+
+char addr[2];
 
 // Lab 3 - First Step
 //--------------------------------------------------------------------------------------------------------
@@ -41,25 +46,57 @@ static ssize_t adxl345_read(struct file *file, char __user *user_buffer, size_t 
 
     if (len > 0)
     {
+        printk("addr %x %x", addr[0], addr[1]);
 
-        buf[0] = read_reg(client, DATAX1);
+        buf[0] = read_reg(client, addr[0]);
 
         if (len > 1)
-            buf[1] = read_reg(client, DATAX0);
+            buf[1] = read_reg(client, addr[1]);
     }
 
     result = buf[0] | buf[1] << 8;
-    printk("Value = %d\n", result);
 
-    if (copy_to_user(user_buffer, buf, size))
+    if (copy_to_user(user_buffer, buf, sizeof(buf)))
         return -EFAULT;
 
     return size;
 }
 
+static long adxl345_write_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
+{
+    printk("IOCTL %ld", arg);
+    if (cmd == WR_VALUE)
+    {
+        switch (arg)
+        {
+        case X_IOCTL:
+            addr[0] = DATAX0;
+            addr[1] = DATAX1;
+            break;
+
+        case Y_IOCTL:
+            addr[0] = DATAY0;
+            addr[1] = DATAY1;
+            break;
+
+        case Z_IOCTL:
+            addr[0] = DATAZ0;
+            addr[1] = DATAZ1;
+            break;
+
+        default:
+            return -1;
+            break;
+        }
+    }
+
+    return 0;
+}
+
 static const struct file_operations adxl345_fops = {
     .owner = THIS_MODULE,
-    .read = adxl345_read};
+    .read = adxl345_read,
+    .unlocked_ioctl = adxl345_write_ioctl};
 
 //--------------------------------------------------------------------------------------------------------
 
@@ -73,14 +110,14 @@ char read_reg(struct i2c_client *client, char reg_id)
     ret = i2c_master_send(client, &reg_id, 1);
     if (ret < 0)
     {
-        printk(KERN_ERR "Failed to send register address\n");
+        pr_err("[ERROR] Failed to send register address\n");
         return ret;
     }
 
     ret = i2c_master_recv(client, &reg_value, 1);
     if (ret < 0)
     {
-        printk(KERN_ERR "Failed to receive register value\n");
+        pr_err("[ERROR] Failed to receive register value\n");
         return ret;
     }
 
@@ -99,14 +136,13 @@ void write_reg(struct i2c_client *client, char reg_id, char reg_value)
 
     if (ret < 0)
     {
-        printk(KERN_ERR "Failed to write register\n");
+        pr_err("[ERROR] Failed to write register\n");
     }
 }
 //--------------------------------------------------------------------------------------------------------
 
 // https://docs.kernel.org/i2c/writing-clients.html
-static int adxl345_probe(struct i2c_client *client,
-                         const struct i2c_device_id *id)
+static int adxl345_probe(struct i2c_client *client, const struct i2c_device_id *id)
 {
     char currentValuePOWER;
     char currentValueFIFO;
