@@ -29,6 +29,8 @@ int main()
 
     // Print the data read from the device
     __int16_t result = buffer[0] | buffer[1] << 8;
+    printf("buffer[0] = %x\n", buffer[0]);
+    printf("buffer[1] = %x\n", buffer[1]);
     printf("Value = %d\n", result);
 
     // Close the device file

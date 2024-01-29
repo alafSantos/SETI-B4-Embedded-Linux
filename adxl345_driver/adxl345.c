@@ -23,25 +23,38 @@ char x = 0; // Counter for the connected devices
 
 // Lab 3 - Second Step
 //--------------------------------------------------------------------------------------------------------
-static int adxl345_read(struct file *file, char __user *user_buffer, size_t size, loff_t *offset)
+static ssize_t adxl345_read(struct file *file, char __user *user_buffer, size_t size, loff_t *offset)
 {
-    struct adxl345_device *dev = (struct adxl345_device *)file->private_data;
-    struct i2c_client *client = to_i2c_client(dev->misc_dev.parent);
 
-    char len = size / sizeof(char);
+    int result;
+    struct adxl345_device *dev;
+    struct i2c_client *client;
+    char *buf;
+    char len;
 
     printk("READING FUNCTION WAS CALLED\n");
+
+    dev = (struct adxl345_device *)file->private_data;
+    client = to_i2c_client(dev->misc_dev.parent);
+    buf = kmalloc(sizeof(char) * 2, GFP_KERNEL);
+    len = size / sizeof(char);
 
     if (len > 0)
     {
 
-        user_buffer[0] = read_reg(client, DATAX1);
+        buf[0] = read_reg(client, DATAX1);
 
         if (len > 1)
-            user_buffer[1] = read_reg(client, DATAX0);
+            buf[1] = read_reg(client, DATAX0);
     }
 
-    return 0;
+    result = buf[0] | buf[1] << 8;
+    printk("Value = %d\n", result);
+
+    if (copy_to_user(user_buffer, buf, size))
+        return -EFAULT;
+
+    return size;
 }
 
 static const struct file_operations adxl345_fops = {
@@ -52,22 +65,42 @@ static const struct file_operations adxl345_fops = {
 
 // Lab 2 - Third Step
 //--------------------------------------------------------------------------------------------------------
-char read_reg(struct i2c_client *client,
-              char reg_id)
+char read_reg(struct i2c_client *client, char reg_id)
 {
     char reg_value;
+    int ret;
 
-    i2c_master_send(client, &reg_id, 1);
-    i2c_master_recv(client, &reg_value, 1);
+    ret = i2c_master_send(client, &reg_id, 1);
+    if (ret < 0)
+    {
+        printk(KERN_ERR "Failed to send register address\n");
+        return ret;
+    }
+
+    ret = i2c_master_recv(client, &reg_value, 1);
+    if (ret < 0)
+    {
+        printk(KERN_ERR "Failed to receive register value\n");
+        return ret;
+    }
 
     return reg_value;
 }
 
-void write_reg(struct i2c_client *client,
-               char reg_id, char reg_value)
+void write_reg(struct i2c_client *client, char reg_id, char reg_value)
 {
-    char buf[2] = {reg_id, reg_value};
-    i2c_master_send(client, buf, 2);
+    int ret;
+    char buf[2];
+
+    buf[0] = reg_id;
+    buf[1] = reg_value;
+
+    ret = i2c_master_send(client, buf, sizeof(buf));
+
+    if (ret < 0)
+    {
+        printk(KERN_ERR "Failed to write register\n");
+    }
 }
 //--------------------------------------------------------------------------------------------------------
 
@@ -75,6 +108,11 @@ void write_reg(struct i2c_client *client,
 static int adxl345_probe(struct i2c_client *client,
                          const struct i2c_device_id *id)
 {
+    char currentValuePOWER;
+    char currentValueFIFO;
+    char *name;
+    struct adxl345_device *adxl345_dev;
+
     printk("adxl345 has been detected...\n\n");
 
     // Lab 2 - Second Step
@@ -109,13 +147,13 @@ static int adxl345_probe(struct i2c_client *client,
     printk("current value: %d\n\n", read_reg(client, DATA_FORMAT));
 
     printk("-------------------\nFIFO_CTL\n");
-    char currentValueFIFO = read_reg(client, FIFO_CTL);
+    currentValueFIFO = read_reg(client, FIFO_CTL);
     printk("previous value: %d\n", currentValueFIFO);
     write_reg(client, FIFO_CTL, 0x3F & currentValueFIFO);
     printk("current value: %d\n\n", read_reg(client, FIFO_CTL));
 
     printk("-------------------\nPOWER_CTL\n");
-    char currentValuePOWER = read_reg(client, POWER_CTL);
+    currentValuePOWER = read_reg(client, POWER_CTL);
     printk("previous value: %d\n", currentValuePOWER);
     write_reg(client, POWER_CTL, 0x08 | currentValuePOWER);
     printk("current value: %d\n\n", read_reg(client, POWER_CTL));
@@ -124,7 +162,7 @@ static int adxl345_probe(struct i2c_client *client,
     // Lab 3 - First Step
     //--------------------------------------------------------------------------------------------------------
     // Dynamically allocating memory for an instance of the struct adxl345_device
-    struct adxl345_device *adxl345_dev = kmalloc(sizeof(struct adxl345_device), GFP_KERNEL);
+    adxl345_dev = kmalloc(sizeof(struct adxl345_device), GFP_KERNEL);
     if (!adxl345_dev)
         return -ENOMEM;
 
@@ -132,7 +170,7 @@ static int adxl345_probe(struct i2c_client *client,
     i2c_set_clientdata(client, adxl345_dev);
 
     // Filling the content of the miscdevice structure contained in the instance of the adxl345_device structure
-    char *name = kasprintf(GFP_KERNEL, "adxl345-%d", x);
+    name = kasprintf(GFP_KERNEL, "adxl345-%d", x);
     if (!name)
     {
         pr_err("[ERROR] allocation failure\n");
@@ -167,10 +205,13 @@ static int adxl345_probe(struct i2c_client *client,
 }
 static int adxl345_remove(struct i2c_client *client)
 {
+    char power_value;
+    struct adxl345_device *adxl345_dev;
+
     // Lab 2 - Third Step
     //--------------------------------------------------------------------------------------------------------
     printk("-------------------\nPOWER_CTL\n");
-    char power_value = read_reg(client, POWER_CTL);
+    power_value = read_reg(client, POWER_CTL);
     printk("previous value: %d\n", power_value);
     write_reg(client, POWER_CTL, power_value & 0xF7);
     printk("current value: %d\n\n", read_reg(client, POWER_CTL));
@@ -178,14 +219,12 @@ static int adxl345_remove(struct i2c_client *client)
 
     // Lab 3 - First Step
     //--------------------------------------------------------------------------------------------------------
-    struct adxl345_device *adxl345_dev = i2c_get_clientdata(client); // Getting the device pointer from the client
-    misc_deregister(&adxl345_dev->misc_dev);                         // Unregistering the misc device
-    char *name = adxl345_dev->misc_dev.name;
+    adxl345_dev = i2c_get_clientdata(client); // Getting the device pointer from the client
+    misc_deregister(&adxl345_dev->misc_dev);  // Unregistering the misc device
+    printk("%s has been removed\n", adxl345_dev->misc_dev.name);
 
-    printk("%s has been removed\n", name);
-
-    kfree(name);        // Free the memory reserved for the device name
-    kfree(adxl345_dev); // Free the memory allocated for the device structure
+    kfree(adxl345_dev->misc_dev.name); // Free the memory reserved for the device name
+    kfree(adxl345_dev);                // Free the memory allocated for the device structure
 
     x--; // Decreasing the number of connected devices
     //--------------------------------------------------------------------------------------------------------
