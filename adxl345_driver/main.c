@@ -6,7 +6,7 @@
 #include <sys/ioctl.h>
 
 #define FILE_NAME "/dev/adxl345-0"
-#define WR_VALUE _IOW(10, 0, char)
+#define WR_VALUE _IOW(20, 0, char) // (type,nr,size)
 #define X_IOCTL 0
 #define Y_IOCTL 1
 #define Z_IOCTL 2
@@ -29,7 +29,8 @@ int main()
         selected_axis = Y_IOCTL;
     else if (axis == 'z' || axis == 'Z')
         selected_axis = Z_IOCTL;
-    else{
+    else
+    {
         printf("Failed to read an invalid axis");
         return -1;
     }

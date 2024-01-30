@@ -4,105 +4,32 @@
 #include <linux/of.h>
 #include <linux/i2c.h>
 
+#include <linux/miscdevice.h>
 #include <linux/ioctl.h>
 #include "adxl345_tp.h"
 
-//--------------------------------------------------------------------------------------------------------
-char read_reg(struct i2c_client *client, char reg_id);
-void write_reg(struct i2c_client *client, char reg_id, char reg_value);
+static int read_reg(struct i2c_client *client, char reg_id);
+static int write_reg(struct i2c_client *client, char reg_id, char reg_value);
+static ssize_t adxl345_read(struct file *file, char __user *user_buffer, size_t size, loff_t *offset);
+static long adxl345_write_ioctl(struct file *file, unsigned int cmd, unsigned long arg);
 static int adxl345_probe(struct i2c_client *client, const struct i2c_device_id *id);
-
-char addr[2];
-
-// Lab 3 - First Step
-//--------------------------------------------------------------------------------------------------------
-#include <linux/miscdevice.h>
+static int adxl345_remove(struct i2c_client *client);
 
 struct adxl345_device
 {
     struct miscdevice misc_dev;
+    char addr[2];
 };
-
-char x = 0; // Counter for the connected devices
-//--------------------------------------------------------------------------------------------------------
-
-// Lab 3 - Second Step
-//--------------------------------------------------------------------------------------------------------
-static ssize_t adxl345_read(struct file *file, char __user *user_buffer, size_t size, loff_t *offset)
-{
-
-    int result;
-    struct adxl345_device *dev;
-    struct i2c_client *client;
-    char *buf;
-    char len;
-
-    printk("READING FUNCTION WAS CALLED\n");
-
-    dev = (struct adxl345_device *)file->private_data;
-    client = to_i2c_client(dev->misc_dev.parent);
-    buf = kmalloc(sizeof(char) * 2, GFP_KERNEL);
-    len = size / sizeof(char);
-
-    if (len > 0)
-    {
-        printk("addr %x %x", addr[0], addr[1]);
-
-        buf[0] = read_reg(client, addr[0]);
-
-        if (len > 1)
-            buf[1] = read_reg(client, addr[1]);
-    }
-
-    result = buf[0] | buf[1] << 8;
-
-    if (copy_to_user(user_buffer, buf, sizeof(buf)))
-        return -EFAULT;
-
-    return size;
-}
-
-static long adxl345_write_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
-{
-    printk("IOCTL %ld", arg);
-    if (cmd == WR_VALUE)
-    {
-        switch (arg)
-        {
-        case X_IOCTL:
-            addr[0] = DATAX0;
-            addr[1] = DATAX1;
-            break;
-
-        case Y_IOCTL:
-            addr[0] = DATAY0;
-            addr[1] = DATAY1;
-            break;
-
-        case Z_IOCTL:
-            addr[0] = DATAZ0;
-            addr[1] = DATAZ1;
-            break;
-
-        default:
-            return -1;
-            break;
-        }
-    }
-
-    return 0;
-}
 
 static const struct file_operations adxl345_fops = {
     .owner = THIS_MODULE,
     .read = adxl345_read,
     .unlocked_ioctl = adxl345_write_ioctl};
 
-//--------------------------------------------------------------------------------------------------------
+char x = 0; // Counter for the connected devices
+char debug_flag = 0;
 
-// Lab 2 - Third Step
-//--------------------------------------------------------------------------------------------------------
-char read_reg(struct i2c_client *client, char reg_id)
+static int read_reg(struct i2c_client *client, char reg_id)
 {
     char reg_value;
     int ret;
@@ -124,7 +51,7 @@ char read_reg(struct i2c_client *client, char reg_id)
     return reg_value;
 }
 
-void write_reg(struct i2c_client *client, char reg_id, char reg_value)
+static int write_reg(struct i2c_client *client, char reg_id, char reg_value)
 {
     int ret;
     char buf[2];
@@ -137,11 +64,81 @@ void write_reg(struct i2c_client *client, char reg_id, char reg_value)
     if (ret < 0)
     {
         pr_err("[ERROR] Failed to write register\n");
+        return -EBUSY;
     }
-}
-//--------------------------------------------------------------------------------------------------------
 
-// https://docs.kernel.org/i2c/writing-clients.html
+    return 0;
+}
+
+static ssize_t adxl345_read(struct file *file, char __user *user_buffer, size_t size, loff_t *offset)
+{
+
+    struct adxl345_device *dev;
+    struct i2c_client *client;
+    char *buf;
+    char len;
+
+    if (debug_flag)
+        printk("READING FUNCTION WAS CALLED\n");
+
+    dev = (struct adxl345_device *)file->private_data;
+    client = to_i2c_client(dev->misc_dev.parent);
+    buf = kmalloc(sizeof(char) * 2, GFP_KERNEL);
+    len = size / sizeof(char);
+
+    if (len > 0)
+    {
+        if (debug_flag)
+            printk("addr %x %x", dev->addr[0], dev->addr[1]);
+
+        buf[0] = read_reg(client, dev->addr[0]);
+
+        if (len > 1)
+            buf[1] = read_reg(client, dev->addr[1]);
+    }
+
+    if (copy_to_user(user_buffer, buf, sizeof(buf)))
+        return -EFAULT;
+
+    return size;
+}
+
+static long adxl345_write_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
+{
+    struct adxl345_device *dev;
+    dev = (struct adxl345_device *)file->private_data;
+
+    if (debug_flag)
+        printk("IOCTL %ld", arg);
+
+    if (cmd == WR_VALUE)
+    {
+        switch (arg)
+        {
+        case X_IOCTL:
+            dev->addr[0] = DATAX0;
+            dev->addr[1] = DATAX1;
+            break;
+
+        case Y_IOCTL:
+            dev->addr[0] = DATAY0;
+            dev->addr[1] = DATAY1;
+            break;
+
+        case Z_IOCTL:
+            dev->addr[0] = DATAZ0;
+            dev->addr[1] = DATAZ1;
+            break;
+
+        default:
+            return -1;
+            break;
+        }
+    }
+
+    return 0;
+}
+
 static int adxl345_probe(struct i2c_client *client, const struct i2c_device_id *id)
 {
     char currentValuePOWER;
@@ -149,54 +146,58 @@ static int adxl345_probe(struct i2c_client *client, const struct i2c_device_id *
     char *name;
     struct adxl345_device *adxl345_dev;
 
-    printk("adxl345 has been detected...\n\n");
+    if (debug_flag)
+        printk("adxl345 has been detected...\n\n");
 
-    // Lab 2 - Second Step
-    //--------------------------------------------------------------------------------------------------------
-    /*
-        char buf[2];
-        const char id2[1] = {id->driver_data};
-
-        i2c_master_send(client, id2, 1);
-        i2c_master_recv(client, buf, 1);
-
-        printk("accelerometer: %d | expected value: %d\n", buf[0], 0xe5);
-    */
-
-    // Lab 2 - Third Step
-    //--------------------------------------------------------------------------------------------------------
     read_reg(client, id->driver_data);
 
-    printk("-------------------\nBW_RATE\n");
-    printk("previous value: %d\n", read_reg(client, BW_RATE));
+    if (debug_flag)
+    {
+
+        printk("-------------------\nBW_RATE\n");
+        printk("previous value: %d\n", read_reg(client, BW_RATE));
+    }
     write_reg(client, BW_RATE, RATE_CODE_0100);
-    printk("current value: %d\n\n", read_reg(client, BW_RATE));
+    if (debug_flag)
+        printk("current value: %d\n\n", read_reg(client, BW_RATE));
 
-    printk("-------------------\nINT_ENABLE\n");
-    printk("previous value: %d\n", read_reg(client, INT_ENABLE));
+    if (debug_flag)
+    {
+        printk("-------------------\nINT_ENABLE\n");
+        printk("previous value: %d\n", read_reg(client, INT_ENABLE));
+    }
     write_reg(client, INT_ENABLE, 0);
-    printk("current value: %d\n\n", read_reg(client, INT_ENABLE));
+    if (debug_flag)
+        printk("current value: %d\n\n", read_reg(client, INT_ENABLE));
 
-    printk("-------------------\nDATA_FORMAT\n");
-    printk("previous value: %d\n", read_reg(client, DATA_FORMAT));
+    if (debug_flag)
+    {
+
+        printk("-------------------\nDATA_FORMAT\n");
+        printk("previous value: %d\n", read_reg(client, DATA_FORMAT));
+    }
     write_reg(client, DATA_FORMAT, 0);
-    printk("current value: %d\n\n", read_reg(client, DATA_FORMAT));
+    if (debug_flag)
+        printk("current value: %d\n\n", read_reg(client, DATA_FORMAT));
 
-    printk("-------------------\nFIFO_CTL\n");
+    if (debug_flag)
+        printk("-------------------\nFIFO_CTL\n");
     currentValueFIFO = read_reg(client, FIFO_CTL);
-    printk("previous value: %d\n", currentValueFIFO);
+    if (debug_flag)
+        printk("previous value: %d\n", currentValueFIFO);
     write_reg(client, FIFO_CTL, 0x3F & currentValueFIFO);
-    printk("current value: %d\n\n", read_reg(client, FIFO_CTL));
+    if (debug_flag)
+        printk("current value: %d\n\n", read_reg(client, FIFO_CTL));
 
-    printk("-------------------\nPOWER_CTL\n");
+    if (debug_flag)
+        printk("-------------------\nPOWER_CTL\n");
     currentValuePOWER = read_reg(client, POWER_CTL);
-    printk("previous value: %d\n", currentValuePOWER);
+    if (debug_flag)
+        printk("previous value: %d\n", currentValuePOWER);
     write_reg(client, POWER_CTL, 0x08 | currentValuePOWER);
-    printk("current value: %d\n\n", read_reg(client, POWER_CTL));
-    //--------------------------------------------------------------------------------------------------------
+    if (debug_flag)
+        printk("current value: %d\n\n", read_reg(client, POWER_CTL));
 
-    // Lab 3 - First Step
-    //--------------------------------------------------------------------------------------------------------
     // Dynamically allocating memory for an instance of the struct adxl345_device
     adxl345_dev = kmalloc(sizeof(struct adxl345_device), GFP_KERNEL);
     if (!adxl345_dev)
@@ -226,19 +227,15 @@ static int adxl345_probe(struct i2c_client *client, const struct i2c_device_id *
     if (misc_register(&adxl345_dev->misc_dev))
     {
         pr_err("[ERROR] misc_register failed\n");
-        return -1;
+        return -EBUSY;
     }
 
-    printk("%s has been detected\n", name);
-    //--------------------------------------------------------------------------------------------------------
-
-    // Lab 3 - Second Step
-    //--------------------------------------------------------------------------------------------------------
-
-    //--------------------------------------------------------------------------------------------------------
+    if (debug_flag)
+        printk("%s has been detected\n", name);
 
     return 0;
 }
+
 static int adxl345_remove(struct i2c_client *client)
 {
     char power_value;
@@ -267,6 +264,7 @@ static int adxl345_remove(struct i2c_client *client)
 
     return 0;
 }
+
 /* The following list allows the association between a device and its driver
  driver in the case of a static initialization without using
  device tree.
