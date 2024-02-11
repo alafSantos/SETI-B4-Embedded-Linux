@@ -8,10 +8,13 @@
 #include <linux/ioctl.h>
 #include "adxl345_tp.h"
 
+#define IOCTL_V2
+
 static int read_reg(struct i2c_client *client, char reg_id);
 static int write_reg(struct i2c_client *client, char reg_id, char reg_value);
 static ssize_t adxl345_read(struct file *file, char __user *user_buffer, size_t size, loff_t *offset);
 static long adxl345_write_ioctl(struct file *file, unsigned int cmd, unsigned long arg);
+static long adxl345_write_read_ioctl(struct file *file, unsigned int cmd, unsigned long arg);
 static int adxl345_probe(struct i2c_client *client, const struct i2c_device_id *id);
 static int adxl345_remove(struct i2c_client *client);
 
@@ -21,10 +24,23 @@ struct adxl345_device
     char addr[2];
 };
 
+#ifdef IOCTL_V2
+struct ioctl_data
+{
+    char write_data[2];
+    char read_data[2];
+};
+#endif
+
 static const struct file_operations adxl345_fops = {
     .owner = THIS_MODULE,
     .read = adxl345_read,
-    .unlocked_ioctl = adxl345_write_ioctl};
+#ifndef IOCTL_V2
+    .unlocked_ioctl = adxl345_write_ioctl
+#else
+    .unlocked_ioctl = adxl345_write_read_ioctl // adxl345_write_ioctl
+#endif
+};
 
 char x = 0; // Counter for the connected devices
 char debug_flag = 0;
@@ -78,6 +94,7 @@ static ssize_t adxl345_read(struct file *file, char __user *user_buffer, size_t 
     char *buf;
     char len;
 
+
     if (debug_flag)
         printk("READING FUNCTION WAS CALLED\n");
 
@@ -85,6 +102,11 @@ static ssize_t adxl345_read(struct file *file, char __user *user_buffer, size_t 
     client = to_i2c_client(dev->misc_dev.parent);
     buf = kmalloc(sizeof(char) * 2, GFP_KERNEL);
     len = size / sizeof(char);
+
+#ifdef IOCTL_V2
+    dev->addr[0] = DATAX0;
+    dev->addr[1] = DATAX1;
+#endif
 
     if (len > 0)
     {
@@ -134,6 +156,66 @@ static long adxl345_write_ioctl(struct file *file, unsigned int cmd, unsigned lo
             return -1;
             break;
         }
+    }
+
+    return 0;
+}
+
+static long adxl345_write_read_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
+{
+    struct adxl345_device *dev;
+    struct i2c_client *client;
+    struct ioctl_data io_data;
+    char len;
+
+    if (debug_flag)
+        printk("READING FUNCTION WAS CALLED\n");
+
+    dev = (struct adxl345_device *)file->private_data;
+    client = to_i2c_client(dev->misc_dev.parent);
+
+    if (debug_flag)
+        printk("IOCTL %ld", arg);
+
+    if (copy_from_user(&io_data, (struct ioctl_data *)arg, sizeof(struct ioctl_data)) != 0)
+    {
+        return -EFAULT; // Bad address
+    }
+
+    len = io_data.write_data[1]; // number of bytes to be read
+
+    printk("axis %d %d", io_data.write_data[0], io_data.write_data[1]);
+
+    if (cmd == RWR_VALUE)
+    {
+        switch (io_data.write_data[0])
+        {
+        case X_IOCTL:
+            io_data.read_data[0] = read_reg(client, DATAX0);
+            if (len > 1)
+                io_data.read_data[1] = read_reg(client, DATAX1);
+            break;
+
+        case Y_IOCTL:
+            io_data.read_data[0] = read_reg(client, DATAY0);
+            if (len > 1)
+                io_data.read_data[1] = read_reg(client, DATAY1);
+            break;
+
+        case Z_IOCTL:
+            io_data.read_data[0] = read_reg(client, DATAZ0);
+            if (len > 1)
+                io_data.read_data[1] = read_reg(client, DATAZ1);
+            break;
+        default:
+            return -1;
+            break;
+        }
+    }
+
+    if (copy_to_user((struct ioctl_data *)arg, &io_data, sizeof(struct ioctl_data)))
+    {
+        return -EFAULT;
     }
 
     return 0;

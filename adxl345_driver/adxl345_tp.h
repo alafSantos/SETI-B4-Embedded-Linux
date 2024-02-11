@@ -21,7 +21,8 @@
 #define RATE_CODE_0200 0x0B
 #define RATE_CODE_0100 0x0A
 
-#define WR_VALUE _IOW(20, 0, char) // (type,nr,size)
+#define WR_VALUE _IOW(10, 0, char) // (type,nr,size) - The default major number of all the misc drivers is 10.
+#define RWR_VALUE _IOWR(10, 2, char) // (type,nr,size) - The default major number of all the misc drivers is 10.
 #define X_IOCTL 0
 #define Y_IOCTL 1
 #define Z_IOCTL 2
