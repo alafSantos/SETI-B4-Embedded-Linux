@@ -12,7 +12,7 @@
 #define Y_IOCTL 1
 #define Z_IOCTL 2
 
-#define IOCTL_V2
+// #define IOCTL_V2
 
 #ifdef IOCTL_V2
 struct ioctl_data
@@ -95,7 +95,7 @@ int main()
     ssize_t bytes_read;
     char axis;
     char selected_axis = X_IOCTL;
-    char samples = 10;
+    char samples = 4;
     char number_of_bytes = 2;
 
     struct ioctl_data wr;
@@ -130,7 +130,7 @@ int main()
         wr.write_data[0] = selected_axis;
         wr.write_data[1] = number_of_bytes;
 
-        printf("app side %d %d\n", wr.write_data[0], wr.write_data[1]);
+        //        printf("app side %d %d\n", wr.write_data[0], wr.write_data[1]);
 
         bytes_read = ioctl(dev, RWR_VALUE, &wr);
 

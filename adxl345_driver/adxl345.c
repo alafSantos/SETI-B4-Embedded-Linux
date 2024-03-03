@@ -1,36 +1,6 @@
-#include <linux/init.h>
-#include <linux/module.h>
-#include <linux/kernel.h>
-#include <linux/of.h>
-#include <linux/i2c.h>
-
-#include <linux/miscdevice.h>
-#include <linux/ioctl.h>
 #include "adxl345_tp.h"
 
-#define IOCTL_V2
-
-static int read_reg(struct i2c_client *client, char reg_id);
-static int write_reg(struct i2c_client *client, char reg_id, char reg_value);
-static ssize_t adxl345_read(struct file *file, char __user *user_buffer, size_t size, loff_t *offset);
-static long adxl345_write_ioctl(struct file *file, unsigned int cmd, unsigned long arg);
-static long adxl345_write_read_ioctl(struct file *file, unsigned int cmd, unsigned long arg);
-static int adxl345_probe(struct i2c_client *client, const struct i2c_device_id *id);
-static int adxl345_remove(struct i2c_client *client);
-
-struct adxl345_device
-{
-    struct miscdevice misc_dev;
-    char addr[2];
-};
-
-#ifdef IOCTL_V2
-struct ioctl_data
-{
-    char write_data[2];
-    char read_data[2];
-};
-#endif
+static char x = 0; // Counter for the connected devices
 
 static const struct file_operations adxl345_fops = {
     .owner = THIS_MODULE,
@@ -38,18 +8,63 @@ static const struct file_operations adxl345_fops = {
 #ifndef IOCTL_V2
     .unlocked_ioctl = adxl345_write_ioctl
 #else
-    .unlocked_ioctl = adxl345_write_read_ioctl // adxl345_write_ioctl
+    .unlocked_ioctl = adxl345_write_read_ioctl
 #endif
 };
 
-char x = 0; // Counter for the connected devices
-char debug_flag = 0;
+irqreturn_t adxl345_int(int irq, void *dev_id)
+{
+    // Declare variables
+    struct fifo_element fifo;
+    int samples_cnt;
+    int i;
+    struct adxl345_device *adxldevice;
+    struct i2c_client *client;
+    char buffer[6];
+    int bytes_read;
+    char reg_address;
+
+    // Get device and client information
+    adxldevice = (struct adxl345_device *)dev_id;
+    client = (struct i2c_client *)to_i2c_client(adxldevice->misc_dev.parent);
+
+    // Read the number of samples in the FIFO
+    samples_cnt = read_reg(client, FIFO_STATUS) & 0x3F;
+
+    // Iterate over the elements in the FIFO
+    bytes_read = 0;
+    reg_address = DATAX0;
+    for (i = 0; i < samples_cnt; i++)
+    {
+        // Send command to read data from the device
+        i2c_master_send(client, &reg_address, 1);
+
+        // Receive data from the device
+        while (bytes_read < 6)
+            bytes_read += i2c_master_recv(client, buffer + bytes_read, 6 - bytes_read);
+
+        // Copy data to FIFO element and put it into the FIFO
+        memcpy(fifo.data, buffer, 6);
+        kfifo_put(&adxldevice->samples_fifo, fifo);
+    }
+
+    // Put FIFO element into the FIFO
+    if (!kfifo_put(&adxldevice->samples_fifo, fifo))
+        return IRQ_HANDLED;
+
+    // Wake up any processes waiting on the queue
+    wake_up_interruptible(&adxldevice->waiting_queue);
+
+    return IRQ_HANDLED;
+}
 
 static int read_reg(struct i2c_client *client, char reg_id)
 {
+    // Declare variables
     char reg_value;
     int ret;
 
+    // Send register address to the device
     ret = i2c_master_send(client, &reg_id, 1);
     if (ret < 0)
     {
@@ -57,6 +72,7 @@ static int read_reg(struct i2c_client *client, char reg_id)
         return ret;
     }
 
+    // Receive register value from the device
     ret = i2c_master_recv(client, &reg_value, 1);
     if (ret < 0)
     {
@@ -64,73 +80,95 @@ static int read_reg(struct i2c_client *client, char reg_id)
         return ret;
     }
 
+    // Return the register value
     return reg_value;
 }
 
 static int write_reg(struct i2c_client *client, char reg_id, char reg_value)
 {
+    // Declare variables
     int ret;
     char buf[2];
 
+    // Prepare buffer with register address and value
     buf[0] = reg_id;
     buf[1] = reg_value;
 
+    // Send buffer to the device
     ret = i2c_master_send(client, buf, sizeof(buf));
 
+    // Check for errors during sending
     if (ret < 0)
     {
         pr_err("[ERROR] Failed to write register\n");
         return -EBUSY;
     }
 
+    // Return success
     return 0;
 }
 
 static ssize_t adxl345_read(struct file *file, char __user *user_buffer, size_t size, loff_t *offset)
 {
-
+    // Declare variables
     struct adxl345_device *dev;
     struct i2c_client *client;
-    char *buf;
-    char len;
+    struct fifo_element fifo;
+    char fifo_len;
+    int i, bytes_read;
+    int axis;
 
-
-    if (debug_flag)
+    // Debug: Print that the reading function was called
+    if (DEBUG)
         printk("READING FUNCTION WAS CALLED\n");
 
+    // Get device and client information
     dev = (struct adxl345_device *)file->private_data;
     client = to_i2c_client(dev->misc_dev.parent);
-    buf = kmalloc(sizeof(char) * 2, GFP_KERNEL);
-    len = size / sizeof(char);
 
-#ifdef IOCTL_V2
-    dev->addr[0] = DATAX0;
-    dev->addr[1] = DATAX1;
-#endif
+    // Wait until there is data available in the FIFO
+    wait_event_interruptible(dev->waiting_queue, !kfifo_is_empty(&dev->samples_fifo));
 
-    if (len > 0)
+    // Determine the length of the FIFO
+    fifo_len = kfifo_len(&dev->samples_fifo);
+
+    // Limit size to the length of the FIFO
+    if (size > fifo_len)
+        size = fifo_len;
+
+    // Read data from FIFO and copy to user buffer
+    bytes_read = 0;
+    axis = dev->addr[0] - DATAX0; // Axis offset
+    for (i = 0; i < size; i++)
     {
-        if (debug_flag)
-            printk("addr %x %x", dev->addr[0], dev->addr[1]);
+        if (!kfifo_get(&dev->samples_fifo, &fifo))
+        {
+            pr_err("[ERROR] failed to get data from FIFO");
+            return -1;
+        }
 
-        buf[0] = read_reg(client, dev->addr[0]);
+        // Copy data from FIFO to user buffer
+        if (copy_to_user(user_buffer, fifo.data + axis, 2 * sizeof(char)))
+        {
+            pr_err("[ERROR] failed to copy data to user buffer");
+            return -1;
+        }
 
-        if (len > 1)
-            buf[1] = read_reg(client, dev->addr[1]);
+        // Update bytes read
+        bytes_read += sizeof(fifo.data);
     }
 
-    if (copy_to_user(user_buffer, buf, sizeof(buf)))
-        return -EFAULT;
-
-    return size;
+    // Return the total size of data read
+    return bytes_read;
 }
 
+#ifndef IOCTL_V2
 static long adxl345_write_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 {
     struct adxl345_device *dev;
     dev = (struct adxl345_device *)file->private_data;
 
-    if (debug_flag)
+    if (DEBUG)
         printk("IOCTL %ld", arg);
 
     if (cmd == WR_VALUE)
@@ -160,7 +198,7 @@ static long adxl345_write_ioctl(struct file *file, unsigned int cmd, unsigned lo
 
     return 0;
 }
-
+#else
 static long adxl345_write_read_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 {
     struct adxl345_device *dev;
@@ -168,13 +206,13 @@ static long adxl345_write_read_ioctl(struct file *file, unsigned int cmd, unsign
     struct ioctl_data io_data;
     char len;
 
-    if (debug_flag)
+    if (DEBUG)
         printk("READING FUNCTION WAS CALLED\n");
 
     dev = (struct adxl345_device *)file->private_data;
     client = to_i2c_client(dev->misc_dev.parent);
 
-    if (debug_flag)
+    if (DEBUG)
         printk("IOCTL %ld", arg);
 
     if (copy_from_user(&io_data, (struct ioctl_data *)arg, sizeof(struct ioctl_data)) != 0)
@@ -183,8 +221,6 @@ static long adxl345_write_read_ioctl(struct file *file, unsigned int cmd, unsign
     }
 
     len = io_data.write_data[1]; // number of bytes to be read
-
-    printk("axis %d %d", io_data.write_data[0], io_data.write_data[1]);
 
     if (cmd == RWR_VALUE)
     {
@@ -220,64 +256,75 @@ static long adxl345_write_read_ioctl(struct file *file, unsigned int cmd, unsign
 
     return 0;
 }
+#endif
 
 static int adxl345_probe(struct i2c_client *client, const struct i2c_device_id *id)
 {
     char currentValuePOWER;
-    char currentValueFIFO;
     char *name;
     struct adxl345_device *adxl345_dev;
 
-    if (debug_flag)
+    if (DEBUG)
         printk("adxl345 has been detected...\n\n");
 
     read_reg(client, id->driver_data);
 
-    if (debug_flag)
+    if (DEBUG)
     {
 
         printk("-------------------\nBW_RATE\n");
         printk("previous value: %d\n", read_reg(client, BW_RATE));
     }
     write_reg(client, BW_RATE, RATE_CODE_0100);
-    if (debug_flag)
+
+    if (DEBUG)
         printk("current value: %d\n\n", read_reg(client, BW_RATE));
 
-    if (debug_flag)
+    if (DEBUG)
     {
         printk("-------------------\nINT_ENABLE\n");
         printk("previous value: %d\n", read_reg(client, INT_ENABLE));
     }
-    write_reg(client, INT_ENABLE, 0);
-    if (debug_flag)
+
+    if (write_reg(client, INT_ENABLE, 0x02) != 0) // Watermark
+    {
+        pr_err("adxl345 : write_reg failed \n");
+        return -1;
+    }
+    if (DEBUG)
         printk("current value: %d\n\n", read_reg(client, INT_ENABLE));
 
-    if (debug_flag)
+    if (DEBUG)
     {
 
         printk("-------------------\nDATA_FORMAT\n");
         printk("previous value: %d\n", read_reg(client, DATA_FORMAT));
     }
     write_reg(client, DATA_FORMAT, 0);
-    if (debug_flag)
+    if (DEBUG)
         printk("current value: %d\n\n", read_reg(client, DATA_FORMAT));
 
-    if (debug_flag)
+    if (DEBUG)
+    {
         printk("-------------------\nFIFO_CTL\n");
-    currentValueFIFO = read_reg(client, FIFO_CTL);
-    if (debug_flag)
-        printk("previous value: %d\n", currentValueFIFO);
-    write_reg(client, FIFO_CTL, 0x3F & currentValueFIFO);
-    if (debug_flag)
+        printk("previous value: %d\n", read_reg(client, FIFO_CTL));
+    }
+    if (write_reg(client, FIFO_CTL, 0b10010100) != 0)
+    {
+        pr_err("adxl345 : write_reg failed \n");
+        return -1;
+    }
+
+    if (DEBUG)
         printk("current value: %d\n\n", read_reg(client, FIFO_CTL));
 
-    if (debug_flag)
+    if (DEBUG)
         printk("-------------------\nPOWER_CTL\n");
     currentValuePOWER = read_reg(client, POWER_CTL);
-    if (debug_flag)
+    if (DEBUG)
         printk("previous value: %d\n", currentValuePOWER);
     write_reg(client, POWER_CTL, 0x08 | currentValuePOWER);
-    if (debug_flag)
+    if (DEBUG)
         printk("current value: %d\n\n", read_reg(client, POWER_CTL));
 
     // Dynamically allocating memory for an instance of the struct adxl345_device
@@ -305,6 +352,9 @@ static int adxl345_probe(struct i2c_client *client, const struct i2c_device_id *
     adxl345_dev->misc_dev.groups = NULL;
     adxl345_dev->misc_dev.nodename = NULL;
 
+    INIT_KFIFO(adxl345_dev->samples_fifo);
+    init_waitqueue_head(&adxl345_dev->waiting_queue);
+
     // Registering with the misc framework
     if (misc_register(&adxl345_dev->misc_dev))
     {
@@ -312,7 +362,14 @@ static int adxl345_probe(struct i2c_client *client, const struct i2c_device_id *
         return -EBUSY;
     }
 
-    if (debug_flag)
+    if (devm_request_threaded_irq(&client->dev, client->irq, NULL, adxl345_int, IRQF_ONESHOT, name, adxl345_dev))
+    {
+        pr_err("[ERROR] Failed to register an interruption handler\n");
+        misc_deregister(&adxl345_dev->misc_dev);
+        return -1;
+    }
+
+    if (DEBUG)
         printk("%s has been detected\n", name);
 
     return 0;
@@ -320,29 +377,44 @@ static int adxl345_probe(struct i2c_client *client, const struct i2c_device_id *
 
 static int adxl345_remove(struct i2c_client *client)
 {
+    // Declare variables
     char power_value;
     struct adxl345_device *adxl345_dev;
 
-    // Lab 2 - Third Step
-    //--------------------------------------------------------------------------------------------------------
-    printk("-------------------\nPOWER_CTL\n");
+    // Debug: Print POWER_CTL section
+    if (DEBUG)
+        printk("-------------------\nPOWER_CTL\n");
+
+    // Read the value of POWER_CTL register
     power_value = read_reg(client, POWER_CTL);
-    printk("previous value: %d\n", power_value);
+
+    // Debug: Print previous value
+    if (DEBUG)
+        printk("previous value: %d\n", power_value);
+
+    // Clear the measurement bit in POWER_CTL register
     write_reg(client, POWER_CTL, power_value & 0xF7);
-    printk("current value: %d\n\n", read_reg(client, POWER_CTL));
-    //--------------------------------------------------------------------------------------------------------
 
-    // Lab 3 - First Step
-    //--------------------------------------------------------------------------------------------------------
-    adxl345_dev = i2c_get_clientdata(client); // Getting the device pointer from the client
-    misc_deregister(&adxl345_dev->misc_dev);  // Unregistering the misc device
-    printk("%s has been removed\n", adxl345_dev->misc_dev.name);
+    // Debug: Print current value
+    if (DEBUG)
+        printk("current value: %d\n\n", read_reg(client, POWER_CTL));
 
-    kfree(adxl345_dev->misc_dev.name); // Free the memory reserved for the device name
-    kfree(adxl345_dev);                // Free the memory allocated for the device structure
+    // Retrieve device pointer from the client
+    adxl345_dev = i2c_get_clientdata(client);
 
-    x--; // Decreasing the number of connected devices
-    //--------------------------------------------------------------------------------------------------------
+    // Unregister the misc device
+    misc_deregister(&adxl345_dev->misc_dev);
+
+    // Debug: Print device removal
+    if (DEBUG)
+        printk("%s has been removed\n", adxl345_dev->misc_dev.name);
+
+    // Free memory for device name and device structure
+    kfree(adxl345_dev->misc_dev.name);
+    kfree(adxl345_dev);
+
+    // Decrease the number of connected devices
+    x--;
 
     return 0;
 }
@@ -389,4 +461,4 @@ static struct i2c_driver adxl345_driver = {
 module_i2c_driver(adxl345_driver);
 MODULE_LICENSE("GPL");
 MODULE_DESCRIPTION("adxl345 driver");
-MODULE_AUTHOR("Alaf");
+MODULE_AUTHOR("Alaf D. N. SANTOS");
