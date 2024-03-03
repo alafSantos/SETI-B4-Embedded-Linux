@@ -31,7 +31,7 @@ int main()
     ssize_t bytes_read;
     char axis;
     char selected_axis;
-    char samples = 5;
+    char samples = 20;
 
     printf("Choose an axis: ");
     scanf("%c", &axis);

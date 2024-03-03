@@ -9,6 +9,8 @@
 #include <linux/miscdevice.h>
 #include <linux/ioctl.h>
 #include <linux/kfifo.h>
+#include <linux/spinlock.h>
+#include <linux/mutex.h>
 
 // REGISTERS
 #define BW_RATE 0x2C

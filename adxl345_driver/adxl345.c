@@ -2,6 +2,12 @@
 
 static char x = 0; // Counter for the connected devices
 
+struct mutex m_int;
+DEFINE_MUTEX(m_int);
+
+spinlock_t spin_ioctl;
+DEFINE_SPINLOCK(spin_ioctl);
+
 static const struct file_operations adxl345_fops = {
     .owner = THIS_MODULE,
     .read = adxl345_read,
@@ -23,6 +29,7 @@ irqreturn_t adxl345_int(int irq, void *dev_id)
     char buffer[6];
     int bytes_read;
     char reg_address;
+    int err;
 
     // Get device and client information
     adxldevice = (struct adxl345_device *)dev_id;
@@ -34,6 +41,15 @@ irqreturn_t adxl345_int(int irq, void *dev_id)
     // Iterate over the elements in the FIFO
     bytes_read = 0;
     reg_address = DATAX0;
+
+    err = mutex_lock_killable(&m_int);
+
+    if (err)
+    {
+        pr_err("[ERROR] failed to take the mutex");
+        return err;
+    }
+
     for (i = 0; i < samples_cnt; i++)
     {
         // Send command to read data from the device
@@ -47,6 +63,7 @@ irqreturn_t adxl345_int(int irq, void *dev_id)
         memcpy(fifo.data, buffer, 6);
         kfifo_put(&adxldevice->samples_fifo, fifo);
     }
+    mutex_unlock(&m_int);
 
     // Put FIFO element into the FIFO
     if (!kfifo_put(&adxldevice->samples_fifo, fifo))
@@ -176,18 +193,36 @@ static long adxl345_write_ioctl(struct file *file, unsigned int cmd, unsigned lo
         switch (arg)
         {
         case X_IOCTL:
+            if (!spin_trylock(&spin_ioctl))
+            {
+                pr_err("[ERROR] failed to take the spin");
+                return -1;
+            }
             dev->addr[0] = DATAX0;
             dev->addr[1] = DATAX1;
+            spin_unlock(&spin_ioctl);
             break;
 
         case Y_IOCTL:
+            if (!spin_trylock(&spin_ioctl))
+            {
+                pr_err("[ERROR] failed to take the spin");
+                return -1;
+            }
             dev->addr[0] = DATAY0;
             dev->addr[1] = DATAY1;
+            spin_unlock(&spin_ioctl);
             break;
 
         case Z_IOCTL:
+            if (!spin_trylock(&spin_ioctl))
+            {
+                pr_err("[ERROR] failed to take the spin");
+                return -1;
+            }
             dev->addr[0] = DATAZ0;
             dev->addr[1] = DATAZ1;
+            spin_unlock(&spin_ioctl);
             break;
 
         default:
