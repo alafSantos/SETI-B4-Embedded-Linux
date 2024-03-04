@@ -13,6 +13,10 @@ This repository aims to show a little of the Embedded Linux course I followed in
 ### How to compile and execute it?
 [TODO]
 
+- v1.0.0 - working version
+- v2.0.0 - adding interruptions (watermark)
+- v2.0.1 - adding concurrence treatment (mutexes and spinlocks)
+
 ## How to Contribute to the Project
 - Any implementation that could lead to a more optimised code for the different methods already designed would be a nice improvement for this project. 
 
