@@ -42,8 +42,9 @@
 #define INT_SOURCE 0x30
 #define INT_ENABLE 0x2E
 
+#define FINAL_VERSION
 // #define IOCTL_V2
-#define DEBUG 0
+// #define DEBUG
 
 static int read_reg(struct i2c_client *client, char reg_id);
 static int write_reg(struct i2c_client *client, char reg_id, char reg_value);
@@ -52,10 +53,12 @@ static int adxl345_probe(struct i2c_client *client, const struct i2c_device_id *
 static int adxl345_remove(struct i2c_client *client);
 irqreturn_t adxl345_int(int irq, void *dev_id);
 
+#ifndef FINAL_VERSION
 #ifdef IOCTL_V2
 static long adxl345_write_read_ioctl(struct file *file, unsigned int cmd, unsigned long arg);
 #else
 static long adxl345_write_ioctl(struct file *file, unsigned int cmd, unsigned long arg);
+#endif
 #endif
 
 struct fifo_element

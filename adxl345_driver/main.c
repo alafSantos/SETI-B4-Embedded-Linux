@@ -1,29 +1,56 @@
-#include <stdio.h>
-#include <stdlib.h>
-#include <unistd.h>
-#include <fcntl.h>
-#include <errno.h>
-#include <sys/ioctl.h>
-
-#define FILE_NAME "/dev/adxl345-0"
-#define WR_VALUE _IOW(10, 0, char)   // (type,nr,size) - The default major number of all the misc drivers is 10.
-#define RWR_VALUE _IOWR(10, 2, char) // (type,nr,size) - The default major number of all the misc drivers is 10.
-#define X_IOCTL 0
-#define Y_IOCTL 1
-#define Z_IOCTL 2
-
-// #define IOCTL_V2
-
-#ifdef IOCTL_V2
-struct ioctl_data
-{
-    char write_data[2];
-    char read_data[2];
-};
-#endif
+#include "app.h"
 
 int main()
 {
+
+#ifdef FINAL_VERSION
+    int dev;
+    char buffer[6];
+    ssize_t bytes_read;
+    unsigned int samples;
+
+    printf("Number of samples: ");
+    scanf("%d", &samples);
+
+    // Open the device file
+    dev = open(FILE_NAME, O_RDONLY);
+    if (dev < 0)
+    {
+        perror("Failed to open the device file");
+        return -ENOENT;
+    }
+
+    for (int i = 0; i < samples; i++)
+    {
+        printf("------I%d------\n", i);
+        // Read from the device
+        bytes_read = read(dev, buffer, sizeof(buffer));
+        if (bytes_read < 0)
+        {
+            perror("Failed to read from the device");
+            close(dev);
+            return -EFAULT;
+        }
+
+        // Print the data read from the device
+        __int16_t result_x = buffer[0] | buffer[1] << 8;
+        __int16_t result_y = buffer[2] | buffer[3] << 8;
+        __int16_t result_z = buffer[4] | buffer[5] << 8;
+
+#ifdef DEBUG
+        for (int k = 0; k < sizeof(buffer) / sizeof(char); k++)
+            printf("buffer[%d] = %x\n", k, buffer[k]);
+#endif
+        printf("X_value = %d\n", result_x);
+        printf("Y_value = %d\n", result_y);
+        printf("Z_value = %d\n", result_z);
+
+        usleep(100000);
+    }
+
+    // Close the device file
+    close(dev);
+#else
 #ifndef IOCTL_V2
     int dev;
     int dev_change;
@@ -152,6 +179,7 @@ int main()
 
     // Close the device file
     close(dev);
+#endif
 #endif
 
     return 0;
